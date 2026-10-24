@@ -3,6 +3,7 @@
 #include <ranges>
 
 #include "Config.h"
+#include "QualityPolicy.h"
 
 using namespace RE;
 using namespace RE::BSScript;
@@ -12,11 +13,11 @@ using namespace SKSE;
 namespace {
 
     struct EffectPotions {
-        AlchemyItem* level1;
-        AlchemyItem* level2;
-        AlchemyItem* level3;
-        AlchemyItem* level4;
-        AlchemyItem* level5;
+        AlchemyItem* level1{};
+        AlchemyItem* level2{};
+        AlchemyItem* level3{};
+        AlchemyItem* level4{};
+        AlchemyItem* level5{};
     };
 
     struct CobjMetadata {
@@ -24,6 +25,8 @@ namespace {
         int potionMinLevel;
         IngredientItem* ingr1;
         IngredientItem* ingr2;
+        AlchemyItem* originalPotion;
+        std::uint16_t originalCount;
     };
 
     inline BGSKeyword* alchemyKeyword;
@@ -49,24 +52,20 @@ namespace {
     inline BGSPerk* poisonQualityPerk;
     inline BGSPerk* allQualityPerk;
     inline BGSPerk* doubleItemsPerk;
+    inline BGSPerk* requiredPerk;
+    inline BGSPerk* advancedPerk;
+    inline BGSPerk* bonusPerk;
+    inline std::atomic_bool initialized{false};
+    inline std::atomic_bool activeAlchemySession{false};
+    inline std::atomic_uint64_t loadGeneration{0};
 
-    inline BGSPerk* LoadPerkFromConfig(std::string str) {
-        log::info("Loading {}", str);
-        int delimterIndex = str.find("|");
-        if (delimterIndex < 0) {
-            return nullptr;
-        }
-        auto modFile = str.substr(0, delimterIndex);
-        auto formIdStr = str.substr(delimterIndex + 1);
-        log::info("{} {}", modFile, formIdStr);
-        if (modFile == "" || formIdStr == "") {
-            return nullptr;
-        }
-        unsigned int formId;
-        std::stringstream ss;
-        ss << std::hex << formIdStr;
-        ss >> formId;
-        return TESDataHandler::GetSingleton()->LookupForm<BGSPerk>(formId, modFile);
+    BGSPerk* LoadPerkFromConfig(const std::string& value) {
+        if (value.empty()) return nullptr;
+        const auto delimiter = value.find('|');
+        if (delimiter == std::string::npos) return nullptr;
+        const auto plugin = value.substr(0, delimiter);
+        const auto local = std::stoul(value.substr(delimiter + 1), nullptr, 16);
+        return TESDataHandler::GetSingleton()->LookupForm<BGSPerk>(static_cast<FormID>(local), plugin);
     }
 
     inline AlchemyItem* GetEarliestLevelPotion(EffectPotions& potions, int* outLevel) {
@@ -154,7 +153,7 @@ namespace {
 
         for (int i = 0; i < item->effects.size(); i++) {
             auto ingrEffect = item->effects[i];
-            if (ingrEffect->baseEffect == effect) {
+            if (ingrEffect && ingrEffect->baseEffect == effect) {
                 index = i;
                 break;
             }
@@ -174,11 +173,11 @@ namespace {
         if (!metadata.ingr1 || !metadata.ingr2) {
             return false;
         }
-        auto potion = cobj->createdItem->As<AlchemyItem>();
-        if (!potion || !potion->effects[0] || !potion->effects[0]->baseEffect) {
+        auto potion = cobj->createdItem ? cobj->createdItem->As<AlchemyItem>() : nullptr;
+        if (!potion || potion->effects.empty() || !potion->effects[0] || !potion->effects[0]->baseEffect) {
             return false;
         }
-        auto potionEffect = potion->effects[0]->baseEffect;
+        auto potionEffect = effect;
 
         if (!HasKnownEffectInIngredient(potionEffect, metadata.ingr1) ||
             !HasKnownEffectInIngredient(potionEffect, metadata.ingr2)) {
@@ -194,7 +193,7 @@ namespace {
             return;
         }
         // to avoid creating duplicate recipes when first = second, e.g. common + common
-        std::set<unsigned int> createdForFormIds;
+        std::set<std::pair<FormID, FormID>> createdForFormIds;
         const auto factory = IFormFactory::GetConcreteFormFactoryByType<BGSConstructibleObject>();
         auto playerRef = PlayerCharacter::GetSingleton();
         const auto dataHandler = TESDataHandler::GetSingleton();
@@ -211,7 +210,7 @@ namespace {
                 auto ingrFormId = ingr1->GetFormID();
                 auto secIngrFormId = ingr2->GetFormID();
 
-                auto key = ingrFormId + secIngrFormId;
+                auto key = std::minmax(ingrFormId, secIngrFormId);
                 // create recipe if not created already
                 if (!createdForFormIds.contains(key)) {
                     createdForFormIds.insert(key);
@@ -256,6 +255,8 @@ namespace {
                         constructibleMetadata[obj].targetIngredientLevel = targetLevel;
                         constructibleMetadata[obj].ingr1 = ingr1;
                         constructibleMetadata[obj].ingr2 = ingr2;
+                        constructibleMetadata[obj].originalPotion = potion;
+                        constructibleMetadata[obj].originalCount = 1;
 
                         dataHandler->GetFormArray<BGSConstructibleObject>().push_back(obj);
                     }
@@ -264,131 +265,130 @@ namespace {
         }
     }
 
-    class EventHandler : public BSTEventSink<TESFurnitureEvent> {
+
+    bool HasPerk(PlayerCharacter* player, BGSPerk* perk) {
+        return perk && player->HasPerk(perk);
+    }
+
+    void ResetRecipes() {
+        for (auto& [recipe, metadata] : constructibleMetadata) {
+            recipe->createdItem = metadata.originalPotion;
+            recipe->data.numConstructed = metadata.originalCount;
+            if (recipe->conditions.head) recipe->conditions.head->data.comparisonValue.f = 0;
+        }
+    }
+
+    void PrepareRecipes() {
+        ResetRecipes();
+        auto* player = PlayerCharacter::GetSingleton();
+        if (!player) return;
+        const auto& config = Config::GetSingleton();
+        Alchemy::ProgressionState state;
+        state.skill = player->GetBaseActorValue(ActorValue::kAlchemy);
+        state.requiredPerk = !requiredPerk || HasPerk(player, requiredPerk);
+        state.advancedPerk = !advancedPerk || HasPerk(player, advancedPerk);
+        state.levelPerks = {HasPerk(player, level2Perk), HasPerk(player, level3Perk),
+                            HasPerk(player, level4Perk), HasPerk(player, level5Perk)};
+        const int maximum = Alchemy::MaximumQuality(config.progression, state);
+        for (auto& [recipe, metadata] : constructibleMetadata) {
+            if (metadata.potionMinLevel > maximum) continue;
+            auto* original = metadata.originalPotion;
+            auto* effect = original->effects[0]->baseEffect;
+            if (!HasKnownEffectInIngredients(recipe, effect)) continue;
+            const bool categoryBonus = HasPerk(player, original->IsPoison() ? poisonQualityPerk : potionQualityPerk);
+            const int outputLevel = Alchemy::OutputQuality(metadata.potionMinLevel, maximum,
+                                                           categoryBonus, HasPerk(player, allQualityPerk));
+            if (auto* output = GetHigherLevelPotion(potionsByEffect.at(effect), outputLevel)) {
+                recipe->createdItem = output;
+            }
+            recipe->data.numConstructed = HasPerk(player, doubleItemsPerk) ? 2 : metadata.originalCount;
+            if (recipe->conditions.head) recipe->conditions.head->data.comparisonValue.f = 1;
+        }
+    }
+
+    class EventHandler final : public BSTEventSink<TESFurnitureEvent>,
+                               public BSTEventSink<ItemCrafted::Event> {
     public:
         static EventHandler* GetSingleton() {
             static EventHandler self;
-            return std::addressof(self);
+            return &self;
         }
-        inline static int count = 1;
 
-        virtual BSEventNotifyControl ProcessEvent(const TESFurnitureEvent* event,
-                                                  BSTEventSource<TESFurnitureEvent>* eventSource) override {
-            if (!event->actor->IsPlayerRef()) {
+        BSEventNotifyControl ProcessEvent(const TESFurnitureEvent* event,
+                                           BSTEventSource<TESFurnitureEvent>*) override {
+            if (!event || !event->actor || !event->actor->IsPlayerRef() || !event->targetFurniture ||
+                !event->targetFurniture->HasKeyword(alchemyKeyword)) return BSEventNotifyControl::kContinue;
+            const bool entering = event->type == TESFurnitureEvent::FurnitureEventType::kEnter;
+            activeAlchemySession = entering;
+            const auto generation = loadGeneration.load();
+            SKSE::GetTaskInterface()->AddTask([entering, generation] {
+                if (generation != loadGeneration.load()) return;
+                if (entering && activeAlchemySession.load()) {
+                    PrepareRecipes();
+                    SKSE::GetTaskInterface()->AddUITask([generation] {
+                        if (generation != loadGeneration.load() || !activeAlchemySession.load()) return;
+                        auto* ui = UI::GetSingleton();
+                        auto menu = ui ? ui->GetMenu<CraftingMenu>() : nullptr;
+                        auto* submenu = menu ? skyrim_cast<CraftingSubMenus::ConstructibleObjectMenu*>(
+                                                   menu->GetCraftingSubMenu()) : nullptr;
+                        if (submenu) submenu->UpdateConstructibleList();
+                    });
+                } else if (!activeAlchemySession.load()) ResetRecipes();
+            });
+            return BSEventNotifyControl::kContinue;
+        }
+
+        BSEventNotifyControl ProcessEvent(const ItemCrafted::Event* event,
+                                           BSTEventSource<ItemCrafted::Event>*) override {
+            if (!event || !event->item || !activeAlchemySession.load() || !bonusPerk) {
                 return BSEventNotifyControl::kContinue;
             }
-
-            if (!event->targetFurniture->HasKeyword(alchemyKeyword)) {
+            auto* player = PlayerCharacter::GetSingleton();
+            auto* ui = UI::GetSingleton();
+            if (!player || !ui || !HasPerk(player, bonusPerk)) return BSEventNotifyControl::kContinue;
+            auto menu = ui->GetMenu<CraftingMenu>();
+            auto* submenu = menu ? skyrim_cast<CraftingSubMenus::ConstructibleObjectMenu*>(
+                                       menu->GetCraftingSubMenu()) : nullptr;
+            if (!submenu || submenu->currentIndex >= submenu->recipes.size()) return BSEventNotifyControl::kContinue;
+            auto* recipe = submenu->recipes[submenu->currentIndex].constructibleObject;
+            if (!recipe || !constructibleMetadata.contains(recipe) || recipe->createdItem != event->item) {
                 return BSEventNotifyControl::kContinue;
             }
-
-            log::info("Accessing Workbench: {}, {}", event->targetFurniture->GetDisplayFullName(),
-                      event->type == TESFurnitureEvent::FurnitureEventType::kEnter ? "Enter" : "Exit");
-
-            auto level1Allowed = true;
-            auto level2Allowed = true;
-            auto level3Allowed = true;
-            auto level4Allowed = false;
-            auto level5Allowed = false;
-
-            auto playerCharacter = PlayerCharacter::GetSingleton();
-
-            if (event->type == TESFurnitureEvent::FurnitureEventType::kEnter) {
-                for (auto data : constructibleMetadata) {
-                    auto cobj = data.first;
-                    auto& metadata = data.second;
-                    auto potion = cobj->createdItem->As<AlchemyItem>();
-                    if (!potion || !potion->effects[0] || !potion->effects[0]->baseEffect) {
-                        continue;
-                    }
-
-                    int maxAllowedPotionLevel = 1;
-                    if (playerCharacter->HasPerk(level2Perk)) {
-                        maxAllowedPotionLevel = 2;
-                    }
-                    if (playerCharacter->HasPerk(level3Perk)) {
-                        maxAllowedPotionLevel = 3;
-                    }
-                    if (playerCharacter->HasPerk(level4Perk)) {
-                        maxAllowedPotionLevel = 4;
-                    }
-                    if (playerCharacter->HasPerk(level5Perk)) {
-                        maxAllowedPotionLevel = 5;
-                    }
-
-                    // must have perk to access it
-                    if (metadata.potionMinLevel == 2 && !playerCharacter->HasPerk(level2Perk)) {
-                        continue;
-                    }
-                    if (metadata.potionMinLevel == 3 && !playerCharacter->HasPerk(level3Perk)) {
-                        continue;
-                    }
-                    if (metadata.potionMinLevel == 4 && !playerCharacter->HasPerk(level4Perk)) {
-                        continue;
-                    }
-                    if (metadata.potionMinLevel == 5 && !playerCharacter->HasPerk(level5Perk)) {
-                        continue;
-                    }
-
-                    // adjust number of potions constructed if has corresponding perk
-                    if (doubleItemsPerk && playerCharacter->HasPerk(doubleItemsPerk)) {
-                        cobj->data.numConstructed = 2;
-                    }
-
-                    int increaseLevel = 0;
-
-                    if (potionQualityPerk && playerCharacter->HasPerk(potionQualityPerk) && !potion->IsPoison()) {
-                        increaseLevel++;
-                    }
-                    if (poisonQualityPerk && playerCharacter->HasPerk(poisonQualityPerk) && potion->IsPoison()) {
-                        increaseLevel++;
-                    }
-                    if (allQualityPerk && playerCharacter->HasPerk(allQualityPerk)) {
-                        increaseLevel++;
-                    }
-
-                    if (increaseLevel > 0) {
-                        int newLevel = metadata.potionMinLevel + increaseLevel;
-                        if (newLevel > maxAllowedPotionLevel) {
-                            newLevel = maxAllowedPotionLevel;
-                        }
-                        auto effect = potion->effects[0]->baseEffect;
-                        if (effect && potionsByEffect.contains(effect) && newLevel > metadata.potionMinLevel) {
-                            auto potionsVariations = potionsByEffect[effect];
-                            auto newPotion = GetHigherLevelPotion(potionsVariations, newLevel);
-                            if (newPotion) {
-                                cobj->createdItem = newPotion;
-                            }
-                        }
-                    }
-
-                    // Player must know effect in both ingredients
-                    auto potionEffect = potion->effects[0]->baseEffect;
-                    if (!HasKnownEffectInIngredients(cobj, potionEffect)) {
-                        continue;
-                    }
-
-                    // unhide recipe
-                    if (data.first->conditions.head) {
-                        data.first->conditions.head->data.comparisonValue.f = 1.0f;
-                    }
-                }
-            } else {
-                // Mark all recipes hidden again
-                for (auto data : constructibleMetadata) {
-                    if (data.first->conditions.head) {
-                        data.first->conditions.head->data.comparisonValue.f = 0.0f;
-                    }
-                }
+            // Completion sends this event before refreshing the selected recipe in SE, AE and VR.
+            static std::mt19937 random{std::random_device{}()};
+            static std::mutex randomMutex;
+            float roll;
+            {
+                std::scoped_lock lock(randomMutex);
+                roll = std::uniform_real_distribution<float>(0, 100)(random);
             }
-
+            if (!Alchemy::BonusSucceeds(roll, Config::GetSingleton().bonus.chance)) {
+                return BSEventNotifyControl::kContinue;
+            }
+            const auto formID = event->item->GetFormID();
+            const auto count = recipe->data.numConstructed;
+            const auto generation = loadGeneration.load();
+            SKSE::GetTaskInterface()->AddTask([formID, count, generation] {
+                if (generation != loadGeneration.load() || count == 0) return;
+                auto* target = PlayerCharacter::GetSingleton();
+                auto* output = TESForm::LookupByID<AlchemyItem>(formID);
+                if (target && output) {
+                    target->AddObjectToContainer(output, nullptr, count, nullptr);
+                    log::debug("Eureka: bonus {} x {}", formID, count);
+                }
+            });
             return BSEventNotifyControl::kContinue;
         }
     };
 }  // namespace
 
 void AlchmeyDistributor::Initialize() {
+    if (initialized.exchange(true)) return;
     const auto dataHandler = TESDataHandler::GetSingleton();
+    if (!dataHandler) {
+        log::error("No TESDataHandler; alchemy initialization aborted");
+        return;
+    }
 
     alchemyKeyword = TESForm::LookupByID<BGSKeyword>(0x0004F6E6);
     auto craftableKeyword = dataHandler->LookupForm<BGSKeyword>(0x800, "AlchemyReworked.esp");
@@ -403,62 +403,29 @@ void AlchmeyDistributor::Initialize() {
     auto uncommonIngrKeyword = dataHandler->LookupForm<BGSKeyword>(0x807, "AlchemyReworked.esp");
     auto rareIngrKeyword = dataHandler->LookupForm<BGSKeyword>(0x808, "AlchemyReworked.esp");
 
-    auto config = Config::GetSingleton();
-    level2Perk = LoadPerkFromConfig(config.GetPerksConfig().level2Perk);
-    level3Perk = LoadPerkFromConfig(config.GetPerksConfig().level3Perk);
-    level4Perk = LoadPerkFromConfig(config.GetPerksConfig().level4Perk);
-    level5Perk = LoadPerkFromConfig(config.GetPerksConfig().level5Perk);
-    potionQualityPerk = LoadPerkFromConfig(config.GetPerksConfig().potionQualityPerk);
-    poisonQualityPerk = LoadPerkFromConfig(config.GetPerksConfig().poisonQualityPerk);
-    allQualityPerk = LoadPerkFromConfig(config.GetPerksConfig().allQualityPerk);
-    doubleItemsPerk = LoadPerkFromConfig(config.GetPerksConfig().doubleItemsPerk);
 
-    if (!level2Perk) {
-        log::error("Unable to load level2 perk from config");
-        return;
-    }
-    if (!level3Perk) {
-        log::error("Unable to load level3 perk from config");
-        return;
-    }
-    if (!level4Perk) {
-        log::error("Unable to load level4 perk from config");
-        return;
-    }
-    if (!level5Perk) {
-        log::error("Unable to load level5 perk from config");
-        return;
-    }
-    if (config.GetPerksConfig().potionQualityPerk != "") {
-        if (potionQualityPerk) {
-            log::info("Loaded perk for potion +1 level");
-        } else {
-            log::info("Unable to load perk for potion +1 level");
+    const auto& config = Config::GetSingleton();
+    const auto& perks = config.GetPerksConfig();
+    const std::array<std::pair<const std::string*, BGSPerk**>, 11> bindings{{
+        {&perks.level2Perk, &level2Perk}, {&perks.level3Perk, &level3Perk},
+        {&perks.level4Perk, &level4Perk}, {&perks.level5Perk, &level5Perk},
+        {&perks.potionQualityPerk, &potionQualityPerk}, {&perks.poisonQualityPerk, &poisonQualityPerk},
+        {&perks.allQualityPerk, &allQualityPerk}, {&perks.doubleItemsPerk, &doubleItemsPerk},
+        {&config.progression.requiredPerk, &requiredPerk},
+        {&config.progression.advancedPerk, &advancedPerk}, {&config.bonus.perk, &bonusPerk}
+    }};
+    for (const auto& [name, destination] : bindings) {
+        *destination = LoadPerkFromConfig(*name);
+        if (!name->empty() && !*destination) {
+            log::error("Configured perk {} did not resolve; initialization aborted before changing furniture", *name);
+            return;
         }
     }
-    if (config.GetPerksConfig().poisonQualityPerk != "") {
-        if (poisonQualityPerk) {
-            log::info("Loaded perk for poison +1 level");
-        } else {
-            log::info("Unable to load perk for poison +1 level");
-        }
+    if (!alchemyKeyword || !craftableKeyword || !level1Keyword || !level2Keyword || !level3Keyword ||
+        !level4Keyword || !level5Keyword || !commonIngrKeyword || !uncommonIngrKeyword || !rareIngrKeyword) {
+        log::error("Missing AlchemyReworked.esp keywords; initialization aborted before changing furniture");
+        return;
     }
-    if (config.GetPerksConfig().allQualityPerk != "") {
-        if (allQualityPerk) {
-            log::info("Loaded perk for all +1 level");
-        } else {
-            log::info("Unable to load perk for all +1 level");
-        }
-    }
-    if (config.GetPerksConfig().doubleItemsPerk != "") {
-        if (doubleItemsPerk) {
-            log::info("Loaded perk for double potions");
-        } else {
-            log::info("Unable to load perk for double potions");
-        }
-    }
-    // potion/posion/all quality perks are optional along with doubleItems perk. Someome may want to turn them off
-
     for (auto& furn : dataHandler->GetFormArray<TESFurniture>()) {
         if (furn && furn->HasKeyword(alchemyKeyword)) {
             log::info("Overrding furniture {}", furn->GetFullName());
@@ -520,7 +487,7 @@ void AlchmeyDistributor::Initialize() {
             continue;
         }
         // skip multi-effect potions
-        if (alchItem->effects.size() != 1) {
+        if (alchItem->effects.size() != 1 || !alchItem->effects[0] || !alchItem->effects[0]->baseEffect) {
             continue;
         }
         int level = 0;
@@ -629,8 +596,16 @@ void AlchmeyDistributor::Initialize() {
     log::info("Total ingredients: {}", commonIngredients.size() + uncommonIngredients.size() + rareIngredients.size());
     log::info("Total recipes: {}", constructibleMetadata.size());
 
-    ScriptEventSourceHolder::GetSingleton()->GetEventSource<TESFurnitureEvent>()->AddEventSink(
-        EventHandler::GetSingleton());
+    if (auto* events = ScriptEventSourceHolder::GetSingleton()) {
+        events->AddEventSink<TESFurnitureEvent>(EventHandler::GetSingleton());
+    }
+    if (auto* crafted = ItemCrafted::GetEventSource()) crafted->AddEventSink(EventHandler::GetSingleton());
 
     log::info("Initialization Completed");
+}
+
+void AlchmeyDistributor::ResetSession() {
+    ++loadGeneration;
+    activeAlchemySession = false;
+    if (initialized.load()) ResetRecipes();
 }

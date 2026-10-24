@@ -538,3 +538,7 @@ contrib/Distribution/**/*.pdb
 contrib/Distribution/**/*.pex
 
 dist-release
+
+.xmake/
+/*.jsonl
+/*.log

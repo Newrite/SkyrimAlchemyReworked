@@ -1,0 +1,72 @@
+{
+  "targetVersion": "Paths of Empyrean 1.2",
+  "language": "ru",
+  "operations": [
+    {
+      "formid": "000808:PathsOfEmpyrean.esp",
+      "field_path": "Description",
+      "value": "Позволяет готовить зелья и яды II качества при базовом навыке алхимии 20 и III качества при 40. Употребление ингредиента раскрывает первые два эффекта."
+    },
+    {
+      "formid": "000808:PathsOfEmpyrean.esp",
+      "field_path": "Effects",
+      "op": "Remove",
+      "key": "0"
+    },
+    {
+      "formid": "000813:PathsOfEmpyrean.esp",
+      "field_path": "Description",
+      "value": "Позволяет готовить зелья и яды IV качества при базовом навыке алхимии 60 и V качества при 80. Употребление ингредиента раскрывает все эффекты."
+    },
+    {
+      "formid": "000813:PathsOfEmpyrean.esp",
+      "field_path": "Effects",
+      "op": "Remove",
+      "key": "0"
+    },
+    {
+      "formid": "000816:PathsOfEmpyrean.esp",
+      "field_path": "Description",
+      "value": "Создаваемые зелья получают +1 к качеству, не превышая доступного вам уровня мастерства."
+    },
+    {
+      "formid": "000816:PathsOfEmpyrean.esp",
+      "field_path": "Effects",
+      "op": "Remove",
+      "key": "0"
+    },
+    {
+      "formid": "00AA06:PathsOfEmpyrean.esp",
+      "field_path": "Description",
+      "value": "Создаваемые яды получают +1 к качеству, не превышая доступного вам уровня мастерства. Яд существ можно перегонять в котле для приготовления сильнодействующих ядов."
+    },
+    {
+      "formid": "00AA06:PathsOfEmpyrean.esp",
+      "field_path": "Effects",
+      "op": "Remove",
+      "key": "0"
+    },
+    {
+      "formid": "014CEE:PathsOfEmpyrean.esp",
+      "field_path": "Description",
+      "value": "Создаваемые зелья и яды получают ещё +1 к качеству, не превышая доступного вам уровня мастерства. Бонус суммируется с «Белым колдовством» и «Последователем полыни»."
+    },
+    {
+      "formid": "014CEE:PathsOfEmpyrean.esp",
+      "field_path": "Effects",
+      "op": "Remove",
+      "key": "0"
+    },
+    {
+      "formid": "00FBA6:PathsOfEmpyrean.esp",
+      "field_path": "Description",
+      "value": "При каждом успешном изготовлении зелья или яда на алхимическом столе есть 20% шанс получить дополнительную порцию без расхода ингредиентов."
+    },
+    {
+      "formid": "00FBA6:PathsOfEmpyrean.esp",
+      "field_path": "Effects",
+      "op": "Remove",
+      "key": "0"
+    }
+  ]
+}

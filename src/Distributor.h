@@ -2,4 +2,5 @@
 
 namespace AlchmeyDistributor {
     void Initialize();
+    void ResetSession();
 }

@@ -1,0 +1,40 @@
+debug:
+  logLevel: info
+  flushLevel: info
+
+# Uses trained Alchemy, not temporary actor-value modifiers.
+progression:
+  mode: skill
+  thresholds: [20, 40, 60, 80]
+  requiredPerk: PathsOfEmpyrean.esp|000808
+  advancedPerk: PathsOfEmpyrean.esp|000813
+  advancedFromQuality: 4
+
+perks:
+  level2:
+  level3:
+  level4:
+  level5:
+  potionQuality: PathsOfEmpyrean.esp|000816
+  poisonQuality: PathsOfEmpyrean.esp|00AA06
+  allQuality: PathsOfEmpyrean.esp|014CEE
+  doubleItems:
+
+# Rolled independently after each successful AR recipe completion.
+bonus:
+  perk: PathsOfEmpyrean.esp|00FBA6
+  chance: 20
+
+ingredients:
+  addRaritySuffix: true
+  commonSuffix: (Common)
+  uncommonSuffix: (Uncommon)
+  rareSuffix: (Rare)
+
+crafting:
+  level1: common|common
+  level2: common|uncommon
+  level3: common|rare
+  level3Alt: uncommon|uncommon
+  level4: uncommon|rare
+  level5: rare|rare

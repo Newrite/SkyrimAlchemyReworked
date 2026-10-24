@@ -1,0 +1,43 @@
+set_xmakever("3.0.8")
+set_languages("c++23")
+set_defaultplat("windows")
+set_defaultarchs("x64")
+set_allowedplats("windows")
+set_allowedarchs("x64")
+set_defaultmode("releasedbg")
+add_rules("mode.debug", "mode.releasedbg", "mode.release")
+set_policy("package.requires_lock", true)
+
+option("commonlib")
+    set_default(os.getenv("CommonLibSSE-NG") or "../CommonLibSSE-NG")
+    set_description("Local CommonLibSSE-NG checkout")
+option_end()
+
+includes(get_config("commonlib"))
+set_project("AlchemyReworked")
+set_version("1.3.0")
+add_requires("yaml-cpp 0.8.0")
+
+target("AlchemyReworked")
+    add_rules("commonlibsse-ng.plugin", {
+        name = "AlchemyReworked", author = "Alexey Svetliakov; Newrite",
+        description = "Recipe-based alchemy with optional Paths of Empyrean integration"
+    })
+    add_includedirs("src")
+    add_packages("yaml-cpp")
+    set_pcxxheader("src/PCH.h")
+    add_files("src/*.cpp")
+    add_headerfiles("src/*.h")
+    add_cxxflags("/utf-8", "/Zc:preprocessor", {tools = "cl"})
+    on_load(function (target)
+        target:add("files", path.join(target:autogendir(), "commonlib-plugin.rc"), {always_added = true})
+        target:add("files", path.join(target:autogendir(), "commonlibsse-ng-plugin.cpp"), {always_added = true})
+    end)
+
+target("AlchemyReworked.Tests")
+    set_kind("binary")
+    set_default(false)
+    add_includedirs("src")
+    add_packages("yaml-cpp")
+    add_files("src/Config.cpp", "tests/PolicyTests.cpp")
+    add_cxxflags("/utf-8", "/Zc:preprocessor", {tools = "cl"})
